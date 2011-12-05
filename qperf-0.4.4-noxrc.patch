@@ -1,0 +1,299 @@
+--- qperf-0.4.4/src/rdma.c.noxrc	2009-05-27 11:26:36.000000000 -0400
++++ qperf-0.4.4/src/rdma.c	2009-06-21 17:04:05.436610235 -0400
+@@ -78,7 +78,6 @@
+  */
+ typedef enum ibv_wr_opcode ibv_op;
+ typedef struct ibv_comp_channel ibv_cc;
+-typedef struct ibv_xrc_domain ibv_xrc;
+ 
+ 
+ /*
+@@ -159,7 +158,6 @@ typedef struct DEVICE {
+     struct ibv_qp   *qp;                /* Queue Pair */
+     struct ibv_ah   *ah;                /* Address handle */
+     struct ibv_srq  *srq;               /* Shared receive queue */
+-    ibv_xrc         *xrc;               /* XRC domain */
+ } DEVICE;
+ 
+ 
+@@ -756,76 +754,6 @@ run_server_ud_lat(void)
+ 
+ 
+ /*
+- * Measure XRC bi-directional bandwidth (client side).
+- */
+-void
+-run_client_xrc_bi_bw(void)
+-{
+-    par_use(L_ACCESS_RECV);
+-    par_use(R_ACCESS_RECV);
+-    rd_params(IBV_QPT_XRC, K64, 1, 0);
+-    rd_bi_bw(IBV_QPT_XRC);
+-    show_results(BANDWIDTH);
+-}
+-
+-
+-/*
+- * Measure XRC bi-directional bandwidth (server side).
+- */
+-void
+-run_server_xrc_bi_bw(void)
+-{
+-    rd_bi_bw(IBV_QPT_XRC);
+-}
+-
+-
+-/*
+- * Measure XRC bandwidth (client side).
+- */
+-void
+-run_client_xrc_bw(void)
+-{
+-    par_use(L_ACCESS_RECV);
+-    par_use(R_ACCESS_RECV);
+-    par_use(L_NO_MSGS);
+-    par_use(R_NO_MSGS);
+-    rd_params(IBV_QPT_XRC, K64, 1, 0);
+-    rd_client_bw(IBV_QPT_XRC);
+-    show_results(BANDWIDTH);
+-}
+-
+-
+-/*
+- * Measure XRC bandwidth (server side).
+- */
+-void
+-run_server_xrc_bw(void)
+-{
+-    rd_server_def(IBV_QPT_XRC);
+-}
+-
+-
+-/*
+- * Measure XRC latency (client side).
+- */
+-void
+-run_client_xrc_lat(void)
+-{
+-    rd_params(IBV_QPT_XRC, 1, 1, 0);
+-    rd_pp_lat(IBV_QPT_XRC, IO_SR);
+-}
+-
+-
+-/*
+- * Measure XRC latency (server side).
+- */
+-void
+-run_server_xrc_lat(void)
+-{
+-    rd_pp_lat(IBV_QPT_XRC, IO_SR);
+-}
+-
+-/*
+  * Verify RC compare and swap (client side).
+  */
+ void
+@@ -1547,24 +1475,16 @@ show_node_info(DEVICE *dev)
+ 
+     if (Req.use_cm) 
+         debug("L: rkey=%08x vaddr=%010x", n->rkey, n->vaddr);
+-    else if (dev->trans == IBV_QPT_XRC) {
+-        debug("L: lid=%04x qpn=%06x psn=%06x rkey=%08x vaddr=%010x srqn=%08x",
+-                        n->lid, n->qpn, n->psn, n->rkey, n->vaddr, n->srqn);
+-    } else {
++    else
+         debug("L: lid=%04x qpn=%06x psn=%06x rkey=%08x vaddr=%010x",
+                             n->lid, n->qpn, n->psn, n->rkey, n->vaddr);
+-    }
+ 
+     n = &dev->rnode;
+     if (Req.use_cm) 
+         debug("R: rkey=%08x vaddr=%010x", n->rkey, n->vaddr);
+-    else if (dev->trans == IBV_QPT_XRC) {
+-        debug("R: lid=%04x qpn=%06x psn=%06x rkey=%08x vaddr=%010x srqn=%08x",
+-                            n->lid, n->qpn, n->psn, n->rkey, n->vaddr);
+-    } else {
++    else
+         debug("R: lid=%04x qpn=%06x psn=%06x rkey=%08x vaddr=%010x",
+                         n->lid, n->qpn, n->psn, n->rkey, n->vaddr, n->srqn);
+-    }
+ }
+ 
+ 
+@@ -1656,28 +1576,6 @@ rd_create_qp(DEVICE *dev, struct ibv_con
+                 error(SYS, "failed to create QP");
+             dev->qp = id->qp;
+         } else {
+-            if (dev->trans == IBV_QPT_XRC) {
+-                struct ibv_srq_init_attr srq_attr ={
+-                    .attr ={
+-                        .max_wr  = dev->max_recv_wr,
+-                        .max_sge = 1
+-                    }
+-                };
+-
+-                dev->xrc = ibv_open_xrc_domain(context, -1, O_CREAT);
+-                if (!dev->xrc)
+-                    error(SYS, "failed to open XRC domain");
+-
+-                dev->srq = ibv_create_xrc_srq(dev->pd, dev->xrc, dev->cq,
+-                                                                    &srq_attr);
+-                if (!dev->srq)
+-                    error(SYS, "failed to create SRQ");
+-
+-                qp_attr.cap.max_recv_wr  = 0;
+-                qp_attr.cap.max_recv_sge = 0;
+-                qp_attr.xrc_domain       = dev->xrc;
+-            }
+-
+             dev->qp = ibv_create_qp(dev->pd, &qp_attr);
+             if (!dev->qp)
+                 error(SYS, "failed to create QP");
+@@ -2079,7 +1977,7 @@ ib_open(DEVICE *dev)
+         if (dev->trans == IBV_QPT_UD) {
+             flags |= IBV_QP_QKEY;
+             attr.qkey = dev->qkey;
+-        } else if (dev->trans == IBV_QPT_RC || dev->trans == IBV_QPT_XRC) {
++        } else if (dev->trans == IBV_QPT_RC) {
+             flags |= IBV_QP_ACCESS_FLAGS;
+             attr.qp_access_flags =
+                 IBV_ACCESS_REMOTE_READ  |
+@@ -2096,8 +1994,6 @@ ib_open(DEVICE *dev)
+     /* Set up local node QP number, PSN and SRQ number */
+     dev->lnode.qpn = dev->qp->qp_num;
+     dev->lnode.psn = lrand48() & 0xffffff;
+-    if (dev->trans == IBV_QPT_XRC)
+-        dev->lnode.srqn = dev->srq->xrc_srq_num;
+ 
+     /* Set up alternate port LID */
+     if (Req.alt_port) {
+@@ -2177,7 +2073,7 @@ ib_prep(DEVICE *dev)
+         dev->ah = ibv_create_ah(dev->pd, &ah_attr);
+         if (!dev->ah)
+             error(SYS, "failed to create address handle");
+-    } else if (dev->trans == IBV_QPT_RC || dev->trans == IBV_QPT_XRC) {
++    } else if (dev->trans == IBV_QPT_RC) {
+         /* Modify queue pair to RTR */
+         flags = IBV_QP_STATE              |
+                 IBV_QP_AV                 |
+@@ -2231,8 +2127,6 @@ ib_close1(DEVICE *dev)
+         ibv_destroy_qp(dev->qp);
+     if (dev->srq)
+         ibv_destroy_srq(dev->srq);
+-    if (dev->xrc)
+-        ibv_close_xrc_domain(dev->xrc);
+ }
+ 
+ 
+@@ -2360,8 +2254,7 @@ rd_post_send(DEVICE *dev, int off, int l
+         wr.wr.ud.ah          = dev->ah;
+         wr.wr.ud.remote_qpn  = dev->rnode.qpn;
+         wr.wr.ud.remote_qkey = dev->qkey;
+-    } else if (dev->trans == IBV_QPT_XRC)
+-        wr.xrc_remote_srq_num = dev->rnode.srqn;
++    }
+ 
+     if (dev->msg_size <= dev->max_inline)
+         wr.send_flags |= IBV_SEND_INLINE;
+--- qperf-0.4.4/src/qperf.h.noxrc	2009-06-21 17:09:21.359610864 -0400
++++ qperf-0.4.4/src/qperf.h	2009-06-21 17:09:31.161485332 -0400
+@@ -349,12 +349,6 @@ void    run_client_ver_rc_compare_swap(v
+ void    run_server_ver_rc_compare_swap(void);
+ void    run_client_ver_rc_fetch_add(void);
+ void    run_server_ver_rc_fetch_add(void);
+-void    run_client_xrc_bi_bw(void);
+-void    run_server_xrc_bi_bw(void);
+-void    run_client_xrc_bw(void);
+-void    run_server_xrc_bw(void);
+-void    run_client_xrc_lat(void);
+-void    run_server_xrc_lat(void);
+ 
+ 
+ /*
+--- qperf-0.4.4/src/qperf.c.noxrc	2009-06-21 17:06:55.401360006 -0400
++++ qperf-0.4.4/src/qperf.c	2009-06-21 17:09:01.566485253 -0400
+@@ -588,9 +588,6 @@ TEST Tests[] ={
+     test(ud_lat),
+     test(ver_rc_compare_swap),
+     test(ver_rc_fetch_add),
+-    test(xrc_bi_bw),
+-    test(xrc_bw),
+-    test(xrc_lat),
+ #endif
+ };
+ 
+--- qperf-0.4.4/src/help.txt.noxrc	2009-06-21 17:12:10.318360294 -0400
++++ qperf-0.4.4/src/help.txt	2009-06-21 17:12:37.148360683 -0400
+@@ -94,9 +94,6 @@
+         udp_lat
+         ver_rc_compare_swap
+         ver_rc_fetch_add
+-        xrc_bi_bw
+-        xrc_bw
+-        xrc_lat
+ Examples
+     In these examples, we first run qperf on a node called myserver in server
+     mode by invoking it with no arguments.  In all the subsequent examples, we
+@@ -392,9 +389,6 @@
+         ud_bi_bw                UD streaming two way bandwidth
+         ud_bw                   UD streaming one way bandwidth
+         ud_lat                  UD one way latency
+-        xrc_bi_bw               XRC streaming two way bandwidth
+-        xrc_bw                  XRC streaming one way bandwidth
+-        xrc_lat                 XRC one way latency
+     RDMA
+         rc_rdma_read_bw         RC RDMA read streaming one way bandwidth
+         rc_rdma_read_lat        RC RDMA read one way latency
+@@ -928,52 +922,3 @@
+         Tests the RC Fetch and Add Atomic operation.  The server's memory
+         location starts with zero and the client successively adds one.  The
+         results are checked for correctness.
+-xrc_bw +RDMA
+-    Purpose
+-        XRC streaming one way bandwidth
+-    Common Options
+-        --access_recv OnOff (-ar)   Access received data
+-        --id Device:Port (-i)       Set RDMA device and port
+-        --msg_size Size (-m)        Set message size
+-        --cq_poll OnOff             Set polling mode on/off
+-        --time (-t)                 Set test duration
+-    Other Options
+-        --cpu_affinity, --listen_port, --mtu_size, --static_rate, --timeout
+-    Display Options
+-        --precision, --unify_nodes, --unify_units, --use_bits_per_sec,
+-        --verbose
+-    Description
+-        The client sends messages to the server who notes how many it received.
+-        The XRC Send/Receive mechanism is used.
+-xrc_bi_bw +RDMA
+-    Purpose
+-        XRC streaming two way bandwidth
+-    Common Options
+-        --access_recv OnOff (-ar)   Access received data
+-        --id Device:Port (-i)       Set RDMA device and port
+-        --msg_size Size (-m)        Set message size
+-        --cq_poll OnOff             Set polling mode on/off
+-        --time (-t)                 Set test duration
+-    Other Options
+-        --cpu_affinity, --listen_port, --mtu_size, --static_rate, --timeout
+-    Display Options
+-        --precision, --unify_nodes, --unify_units, --use_bits_per_sec,
+-        --verbose
+-    Description
+-        Both the client and server exchange messages with each other using the
+-        XRC Send/Receive mechanism and note how many were received.
+-xrc_lat +RDMA
+-    Purpose
+-        XRC one way latency
+-    Common Options
+-        --id Device:Port (-i)   Set RDMA device and port
+-        --msg_size Size (-m)    Set message size
+-        --cq_poll OnOff         Set polling mode on/off
+-        --time (-t)             Set test duration
+-    Other Options
+-        --cpu_affinity, --listen_port, --mtu_size, --static_rate, --timeout
+-    Display Options
+-        --precision, --unify_nodes, --unify_units, --verbose
+-    Description
+-        A ping pong latency test where the server and client exchange messages
+-        repeatedly using XRC Send/Receive.
